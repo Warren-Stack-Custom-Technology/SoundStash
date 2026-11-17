@@ -8,6 +8,12 @@ Extract the source ZIP and open the **SoundStash** folder containing `settings.g
 
 The app runs on 64-bit ARM Android phones with Android 10 or newer. Build with the same signing key to update an existing install and keep its queue and settings.
 
+## App updates
+
+Starting in 0.5.3, Sound Stash checks [GitHub Releases](https://github.com/Warren-Stack-Custom-Technology/SoundStash/releases) when opened, at most once every 24 hours. You can also use **Settings → Check for app updates**. When an update is available, Sound Stash can download and verify it. Android will ask you to confirm installation and may first ask you to allow installs from Sound Stash.
+
+To publish an update, increase `versionCode` and `versionName` in `app/build.gradle`. Build the APK with the signing key used for the previous version. Create a stable GitHub release tagged with its three-part version, such as `v0.5.3`, and attach the APK as `SoundStash.apk` before publishing the release. A source ZIP alone cannot update the app. If you built your current copy in CoGo, use the same CoGo signing key for the APK you publish.
+
 ## Import and play audio
 
 - Paste YouTube links or text containing them, share from YouTube or Samsung Notes, or select text files, PDFs, and modern Office documents. PDFs can supply both selectable URLs and clickable links. Scanned pages need OCR before import.

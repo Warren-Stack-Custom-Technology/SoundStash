@@ -22,6 +22,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.DocumentsContract;
+import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.view.Gravity;
@@ -38,19 +39,27 @@ import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import androidx.core.content.FileProvider;
+
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class MainActivity extends Activity {
     private static final int OPEN_FILES = 102;
     private static final int NOTIFICATIONS = 103;
     private static final int DOWNLOAD_FOLDER = 104;
+    private static final int ALLOW_APP_UPDATE = 105;
+    private static final String LAST_APP_UPDATE_CHECK = "last_app_update_check";
     private static final String DONATION_URL = "https://www.buymeacoffee.com/WarrenStack";
     private final ExecutorService importWorker = Executors.newSingleThreadExecutor();
+    private final ExecutorService appUpdateWorker = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicBoolean refreshPosted = new AtomicBoolean();
     private final Runnable refreshQueue = () -> {
@@ -72,6 +81,9 @@ public final class MainActivity extends Activity {
     private String importMessage = "";
     private String pendingAction;
     private boolean importing;
+    private boolean appResumed, checkingAppUpdate, showAppUpdateResult, downloadingAppUpdate;
+    private boolean appUpdateReady, waitingForInstallPermission;
+    private AppUpdates.Release deferredAppUpdate;
 
     private static final String[] THEMES = {
             "Dusk", "Black", "Ocean", "Forest", "Ember", "Rosewood", "Glacier", "Paper", "Daylight", "System"
@@ -109,7 +121,11 @@ public final class MainActivity extends Activity {
         queue = QueueStore.get(this);
         metadata = QueueMetadata.get(this);
         settings = getSharedPreferences("night_audio_settings", MODE_PRIVATE);
-        if (savedState != null) pendingAction = savedState.getString("pendingAction");
+        if (savedState != null) {
+            pendingAction = savedState.getString("pendingAction");
+            appUpdateReady = savedState.getBoolean("appUpdateReady");
+            waitingForInstallPermission = savedState.getBoolean("waitingForInstallPermission");
+        }
         build(savedState == null ? "" : savedState.getString("draft", ""));
         if (savedState == null) handleShare(getIntent());
     }
@@ -120,6 +136,22 @@ public final class MainActivity extends Activity {
         queue.cleanTemporaryFiles();
         metadata.refresh();
         refresh();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        appResumed = true;
+        if (appUpdateReady && !waitingForInstallPermission) installAppUpdate();
+        if (deferredAppUpdate != null) {
+            offerAppUpdate(deferredAppUpdate);
+            deferredAppUpdate = null;
+        }
+        checkForAppUpdates(false);
+    }
+
+    @Override protected void onPause() {
+        appResumed = false;
+        super.onPause();
     }
 
     @Override protected void onStop() {
@@ -138,11 +170,14 @@ public final class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putString("draft", input.getText().toString());
         state.putString("pendingAction", pendingAction);
+        state.putBoolean("appUpdateReady", appUpdateReady);
+        state.putBoolean("waitingForInstallPermission", waitingForInstallPermission);
         super.onSaveInstanceState(state);
     }
 
     @Override protected void onDestroy() {
         importWorker.shutdown();
+        appUpdateWorker.shutdownNow();
         super.onDestroy();
     }
 
@@ -440,6 +475,16 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == ALLOW_APP_UPDATE) {
+            waitingForInstallPermission = false;
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                appUpdateReady = false;
+                report("Allow Sound Stash to install apps to finish updating.");
+            } else if (appResumed && appUpdateReady) {
+                installAppUpdate();
+            }
+            return;
+        }
         if (result != RESULT_OK || data == null) return;
         if (request == DOWNLOAD_FOLDER) {
             rememberDownloadFolder(data);
@@ -609,6 +654,8 @@ public final class MainActivity extends Activity {
                 }),
                 new Setting("Clear finished from queue", "", queue::clearFinished));
         settingsSection(sections, menu, "Support",
+                new Setting("Check for app updates", "Version " + AppUpdates.installedVersion(this),
+                        () -> checkForAppUpdates(true)),
                 new Setting("Buy Me a Coffee", "Optional donation", this::openDonation));
 
         ScrollView scroll = new ScrollView(this);
@@ -707,6 +754,110 @@ public final class MainActivity extends Activity {
     private void openDonation() {
         try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(DONATION_URL))); }
         catch (android.content.ActivityNotFoundException error) { report(DONATION_URL); }
+    }
+
+    private void checkForAppUpdates(boolean manual) {
+        if (downloadingAppUpdate || appUpdateReady) {
+            if (manual) report("An app update is already in progress.");
+            return;
+        }
+        if (!manual) {
+            long age = System.currentTimeMillis() - settings.getLong(LAST_APP_UPDATE_CHECK, 0);
+            if (age >= 0 && age < TimeUnit.DAYS.toMillis(1)) return;
+        } else {
+            report("Checking GitHub for app updates…");
+            showAppUpdateResult = true;
+        }
+        if (checkingAppUpdate) return;
+        checkingAppUpdate = true;
+        Context context = getApplicationContext();
+        appUpdateWorker.execute(() -> {
+            try {
+                AppUpdates.Release release = AppUpdates.latest(context);
+                runOnUiThread(() -> finishAppUpdateCheck(release, null));
+            } catch (IOException error) {
+                runOnUiThread(() -> finishAppUpdateCheck(null, error.getMessage()));
+            }
+        });
+    }
+
+    private void finishAppUpdateCheck(AppUpdates.Release release, String error) {
+        if (isFinishing() || isDestroyed()) return;
+        checkingAppUpdate = false;
+        settings.edit().putLong(LAST_APP_UPDATE_CHECK, System.currentTimeMillis()).apply();
+        if (release != null) {
+            if (appResumed) offerAppUpdate(release);
+            else deferredAppUpdate = release;
+        }
+        if (showAppUpdateResult) {
+            if (error != null) report("Couldn't check for app updates. " + error);
+            else if (release == null) report("No newer Sound Stash release is available.");
+            else report("Sound Stash " + release.version() + " is available.");
+            showAppUpdateResult = false;
+        }
+    }
+
+    private void offerAppUpdate(AppUpdates.Release release) {
+        dialog().setTitle("Sound Stash " + release.version() + " is available")
+                .setMessage("Download the APK from GitHub and open the Android installer?")
+                .setNegativeButton("Later", null)
+                .setPositiveButton("Download", (dialog, choice) -> downloadAppUpdate(release)).show();
+    }
+
+    private void downloadAppUpdate(AppUpdates.Release release) {
+        if (downloadingAppUpdate) return;
+        downloadingAppUpdate = true;
+        report("Downloading Sound Stash " + release.version() + "…");
+        Context context = getApplicationContext();
+        appUpdateWorker.execute(() -> {
+            try {
+                AppUpdates.download(context, release);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    downloadingAppUpdate = false;
+                    appUpdateReady = true;
+                    if (appResumed) installAppUpdate();
+                });
+            } catch (IOException error) {
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    downloadingAppUpdate = false;
+                    report("Couldn't download the app update. " + error.getMessage());
+                });
+            }
+        });
+    }
+
+    private void installAppUpdate() {
+        if (queue.isActive()) {
+            appUpdateReady = false;
+            report("Finish or pause the current batch before installing the app update.");
+            return;
+        }
+        File apk = AppUpdates.apkFile(this);
+        if (!apk.isFile()) {
+            appUpdateReady = false;
+            report("The update file is unavailable. Check for app updates to try again.");
+            return;
+        }
+        try {
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                waitingForInstallPermission = true;
+                report("Allow Sound Stash to install apps in Android Settings.");
+                startActivityForResult(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.fromParts("package", getPackageName(), null)), ALLOW_APP_UPDATE);
+                return;
+            }
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".app-update", apk);
+            startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
+            appUpdateReady = false;
+            report("Follow the Android installer to finish updating.");
+        } catch (android.content.ActivityNotFoundException | SecurityException error) {
+            appUpdateReady = false;
+            waitingForInstallPermission = false;
+            report("Android couldn't open the app update installer.");
+        }
     }
 
     private void themeOptions() {
