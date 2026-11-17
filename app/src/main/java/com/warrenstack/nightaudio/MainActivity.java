@@ -56,6 +56,7 @@ public final class MainActivity extends Activity {
     private static final int NOTIFICATIONS = 103;
     private static final int DOWNLOAD_FOLDER = 104;
     private static final int ALLOW_APP_UPDATE = 105;
+    private static final int YOUTUBE_COOKIES = 106;
     private static final String LAST_APP_UPDATE_CHECK = "last_app_update_check";
     private static final String DONATION_URL = "https://www.buymeacoffee.com/WarrenStack";
     private final ExecutorService importWorker = Executors.newSingleThreadExecutor();
@@ -490,6 +491,10 @@ public final class MainActivity extends Activity {
             rememberDownloadFolder(data);
             return;
         }
+        if (request == YOUTUBE_COOKIES) {
+            if (data.getData() != null) updateYouTubeAccount(data.getData());
+            return;
+        }
         if (request != OPEN_FILES) return;
         LinkedHashSet<Uri> files = new LinkedHashSet<>();
         if (data.getData() != null) files.add(data.getData());
@@ -648,6 +653,8 @@ public final class MainActivity extends Activity {
                 new Setting("Download folder", DownloadFolder.selected(settings).label(), this::downloadFolderOptions));
         settingsSection(sections, menu, "Queue and engine",
                 new Setting("Workload", workload().percent + "%", this::workloadOptions),
+                new Setting("YouTube account", YouTubeAccount.hasCookies(this) ? "Cookies imported" : "Guest",
+                        this::youTubeAccountOptions),
                 new Setting("Update YouTube engine", "", () -> {
                     if (queue.isActive()) report("Stop or finish the current batch before updating the engine.");
                     else startJob(DownloadService.UPDATE);
@@ -754,6 +761,47 @@ public final class MainActivity extends Activity {
     private void openDonation() {
         try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(DONATION_URL))); }
         catch (android.content.ActivityNotFoundException error) { report(DONATION_URL); }
+    }
+
+    private void youTubeAccountOptions() {
+        boolean usingAccount = YouTubeAccount.hasCookies(this);
+        AlertDialog.Builder account = dialog().setTitle("YouTube account")
+                .setMessage("Import a Netscape cookies.txt export from your own signed-in YouTube session. "
+                        + "Sound Stash keeps only YouTube cookies on this device and uses them for the next request.")
+                .setPositiveButton(usingAccount ? "Replace cookies" : "Import cookies", (dialog, choice) -> {
+                    Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*")
+                            .addCategory(Intent.CATEGORY_OPENABLE);
+                    try { startActivityForResult(picker, YOUTUBE_COOKIES); }
+                    catch (android.content.ActivityNotFoundException error) {
+                        report("The Android file picker is unavailable.");
+                    }
+                }).setNegativeButton("Cancel", null);
+        if (usingAccount) account.setNeutralButton("Remove cookies", (dialog, choice) -> updateYouTubeAccount(null));
+        account.show();
+    }
+
+    private void updateYouTubeAccount(Uri file) {
+        Context context = getApplicationContext();
+        importWorker.execute(() -> {
+            String status;
+            try {
+                if (file == null) {
+                    YouTubeAccount.remove(context);
+                    status = "YouTube cookies removed. New requests will use guest mode.";
+                } else {
+                    YouTubeAccount.importCookies(context, file);
+                    status = "YouTube cookies imported.";
+                }
+            } catch (SecurityException error) {
+                status = "Couldn't read the selected cookie file.";
+            } catch (IOException error) {
+                status = error.getMessage() == null ? "Couldn't update the YouTube session." : error.getMessage();
+            }
+            String result = status;
+            runOnUiThread(() -> {
+                if (!isDestroyed() && !isFinishing()) report(result);
+            });
+        });
     }
 
     private void checkForAppUpdates(boolean manual) {

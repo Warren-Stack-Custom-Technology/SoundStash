@@ -4,6 +4,7 @@ import android.content.Context;
 
 import com.yausername.ffmpeg.FFmpeg;
 import com.yausername.youtubedl_android.YoutubeDL;
+import com.yausername.youtubedl_android.YoutubeDLException;
 import com.yausername.youtubedl_android.YoutubeDLRequest;
 import com.yausername.youtubedl_android.YoutubeDLResponse;
 
@@ -38,7 +39,21 @@ final class NativeRuntime {
         reading.lockInterruptibly();
         try {
             YoutubeDL.getInstance().init(context);
-            return YoutubeDL.getInstance().execute(request, processId, progress);
+            request.addOption("--ignore-config");
+            request.addOption("--sleep-requests", 1);
+            request.addOption("--retry-sleep", "http:exp=5:30");
+            Path cookies = YouTubeAccount.snapshot(context);
+            try {
+                if (cookies != null) request.addOption("--cookies", cookies.toString());
+                return YoutubeDL.getInstance().execute(request, processId, progress);
+            } catch (YoutubeDLException error) {
+                YouTubeIssue issue = YouTubeIssue.from(error.getMessage(), cookies != null);
+                if (issue != null) throw issue;
+                if (cookies == null) throw error;
+                throw new IOException("The request failed with the imported YouTube session. Try again or replace the cookies in Settings.");
+            } finally {
+                if (cookies != null) Files.deleteIfExists(cookies);
+            }
         } finally {
             reading.unlock();
         }

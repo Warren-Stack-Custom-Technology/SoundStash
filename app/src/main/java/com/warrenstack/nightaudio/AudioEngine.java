@@ -154,6 +154,7 @@ final class AudioEngine {
         request.addOption("--socket-timeout", 25);
         request.addOption("--retries", 5);
         request.addOption("--fragment-retries", 5);
+        request.addOption("--sleep-interval", 5);
         request.addOption("--concurrent-fragments", workload.fragments);
         if (!workload.downloadRate.isEmpty()) request.addOption("--limit-rate", workload.downloadRate);
         request.addOption("--remote-components", "ejs:github");

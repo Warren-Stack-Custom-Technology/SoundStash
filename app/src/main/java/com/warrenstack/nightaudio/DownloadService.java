@@ -135,8 +135,7 @@ public final class DownloadService extends Service {
     private void onThermalStatus(int status) {
         Batch active = batch;
         if (status >= PowerManager.THERMAL_STATUS_SEVERE && active != null && !active.pipeline.isStopped()) {
-            active.stopMessage = HEAT_PAUSE;
-            if (active.cancel()) store.note(HEAT_PAUSE);
+            if (active.cancel(HEAT_PAUSE)) store.note(HEAT_PAUSE);
         }
     }
 
@@ -171,7 +170,12 @@ public final class DownloadService extends Service {
         }
 
         boolean cancel() {
+            return cancel("Queue stopped. Pending items can be resumed.");
+        }
+
+        boolean cancel(String message) {
             if (!pipeline.stop()) return false;
+            stopMessage = message;
             engines.values().forEach(AudioEngine::cancel);
             return true;
         }
@@ -212,8 +216,10 @@ public final class DownloadService extends Service {
                 store.finished(id, result.title(), result.uri().toString(), result.mime(), result.chapters(), result.bytes());
                 saved.incrementAndGet();
             } catch (Exception error) {
+                boolean pausedForYouTube = error instanceof YouTubeIssue issue && issue.pauseQueue
+                        && cancel(issue.getMessage());
                 boolean stopped = pipeline.isStopped();
-                store.failed(id, stopped ? "Ready to resume" : readableError(error), stopped);
+                store.failed(id, stopped && !pausedForYouTube ? "Ready to resume" : readableError(error), stopped);
                 if (!stopped) failed.incrementAndGet();
             } finally {
                 engines.remove(id);

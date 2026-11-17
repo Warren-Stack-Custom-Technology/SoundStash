@@ -22,6 +22,12 @@ To publish an update, increase `versionCode` and `versionName` in `app/build.gra
 - Choose a **Download folder** in Settings or use the default **Downloads / Sound Stash**. Audio saved before the rename stays in its original folders.
 - Choose one chaptered file or numbered chapter tracks under **Chapter export**. The app supports Opus and M4B. Tap **Play** on a finished item. In VLC, open **More options → Go to chapter** for files with embedded chapters.
 
+## YouTube account
+
+Sound Stash uses guest access by default. For content your account can access, choose **Settings → YouTube account → Import cookies** and select a Netscape-format `cookies.txt` [export from your own signed-in YouTube session](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies). Complete any age verification on YouTube itself. Sound Stash keeps only YouTube-domain cookies in private app storage on the device. Use **Replace cookies** if the session expires, or **Remove cookies** to switch back to guest access. Keep the export private because it can grant access to your session.
+
+YouTube can still request bot verification or limit requests while you are signed in. Sound Stash pauses the download queue when it encounters either response. Follow any verification prompt on YouTube or wait for a rate limit to clear before resuming.
+
 ## Performance and appearance
 
 **Settings → Workload** controls the app's pace relative to its original full-speed mode:
